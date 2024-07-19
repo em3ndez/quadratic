@@ -145,7 +145,8 @@ impl SyntaxRule for ExpressionWithPrecedence {
                 | Token::StringLiteral
                 | Token::UnterminatedStringLiteral
                 | Token::NumericLiteral
-                | Token::CellRef => true,
+                | Token::CellRef
+                | Token::InternalCellRef => true,
 
                 Token::Whitespace => false,
                 Token::Unknown => false,
@@ -416,7 +417,7 @@ impl SyntaxRule for ArrayLiteral {
         let end_span = p.span();
 
         if !rows.iter().map(|row| row.len()).all_equal() {
-            return Err(ErrorMsg::NonRectangularArray.with_span(end_span));
+            return Err(RunErrorMsg::NonRectangularArray.with_span(end_span));
         }
 
         Ok(Spanned {

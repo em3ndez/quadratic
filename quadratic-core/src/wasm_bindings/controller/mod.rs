@@ -1,7 +1,6 @@
 use super::*;
-use crate::controller::transaction_types::{CellsForArray, JsCodeResult, JsComputeGetCells};
-use crate::{controller::transaction_summary::TransactionSummary, grid::js_types::*};
-use std::collections::HashSet;
+use crate::grid::js_types::*;
+use crate::wasm_bindings::controller::sheet_info::SheetInfo;
 use std::str::FromStr;
 
 pub mod auto_complete;
@@ -9,22 +8,93 @@ pub mod borders;
 pub mod bounds;
 pub mod cells;
 pub mod clipboard;
+pub mod code;
 pub mod export;
 pub mod formatting;
 pub mod import;
 pub mod render;
+pub mod search;
+pub mod sheet_info;
 pub mod sheet_offsets;
 pub mod sheets;
 pub mod summarize;
+pub mod transactions;
+pub mod worker;
 
 #[wasm_bindgen]
 impl GridController {
     /// Imports a [`GridController`] from a JSON string.
     #[wasm_bindgen(js_name = "newFromFile")]
-    pub fn js_new_from_file(file: &str) -> Result<GridController, JsValue> {
-        Ok(GridController::from_grid(
-            file::import(file).map_err(|e| e.to_string())?,
-        ))
+    pub fn js_new_from_file(
+        file: &str,
+        last_sequence_num: u32,
+        initialize: bool,
+    ) -> Result<GridController, JsValue> {
+        match file::import(file) {
+            Ok(file) => {
+                let grid = GridController::from_grid(file, last_sequence_num as u64);
+
+                // populate data for client and text renderer
+                if initialize {
+                    // first recalculate all bounds in sheets
+                    let mut html = vec![];
+                    let sheets_info = grid
+                        .sheet_ids()
+                        .iter()
+                        .filter_map(|sheet_id| {
+                            grid.try_sheet(*sheet_id).map(|sheet| {
+                                html.extend(sheet.get_html_output());
+                                SheetInfo::from(sheet)
+                            })
+                        })
+                        .collect::<Vec<SheetInfo>>();
+                    if let Ok(sheets_info) = serde_json::to_string(&sheets_info) {
+                        crate::wasm_bindings::js::jsSheetInfo(sheets_info);
+                    }
+                    if !html.is_empty() {
+                        if let Ok(html) = serde_json::to_string(&html) {
+                            crate::wasm_bindings::js::jsHtmlOutput(html);
+                        }
+                    }
+                    grid.sheet_ids().iter().for_each(|sheet_id| {
+                        let fills = grid.sheet_fills(*sheet_id);
+                        if let Ok(fills) = serde_json::to_string(&fills) {
+                            crate::wasm_bindings::js::jsSheetFills(sheet_id.to_string(), fills);
+                        }
+                        if let Some(sheet) = grid.try_sheet(*sheet_id) {
+                            let borders = sheet.render_borders();
+                            if let Ok(borders) = serde_json::to_string(&borders) {
+                                crate::wasm_bindings::js::jsSheetBorders(
+                                    sheet_id.to_string(),
+                                    borders,
+                                );
+                            }
+                            let code = sheet.get_all_render_code_cells();
+                            if !code.is_empty() {
+                                if let Ok(code) = serde_json::to_string(&code) {
+                                    crate::wasm_bindings::js::jsSheetCodeCell(
+                                        sheet_id.to_string(),
+                                        code,
+                                    );
+                                }
+                            }
+                            // sends all sheet fills to the client
+                            sheet.send_sheet_fills();
+
+                            // sends all images to the client
+                            sheet.send_all_images();
+                        }
+                    });
+                }
+                Ok(grid)
+            }
+            Err(e) => Err(JsValue::from_str(&e.to_string())),
+        }
+    }
+
+    #[wasm_bindgen(js_name = "test")]
+    pub fn js_test() -> GridController {
+        GridController::test()
     }
 
     /// Exports a [`GridController`] to a file. Returns a `String`.
@@ -37,12 +107,6 @@ impl GridController {
     #[wasm_bindgen(js_name = "getVersion")]
     pub fn js_file_version(&self) -> String {
         file::CURRENT_VERSION.into()
-    }
-
-    /// Constructs a new empty grid.
-    #[wasm_bindgen(constructor)]
-    pub fn js_new() -> Self {
-        Self::new()
     }
 
     /// Returns whether there is a transaction to undo.
@@ -68,55 +132,5 @@ impl GridController {
     #[wasm_bindgen(js_name = "redo")]
     pub fn js_redo(&mut self, cursor: Option<String>) -> Result<JsValue, JsValue> {
         Ok(serde_wasm_bindgen::to_value(&self.redo(cursor))?)
-    }
-
-    #[wasm_bindgen(js_name = "calculationComplete")]
-    pub fn js_calculation_complete(&mut self, result: JsCodeResult) -> Result<JsValue, JsValue> {
-        Ok(serde_wasm_bindgen::to_value(
-            &self.calculation_complete(result),
-        )?)
-    }
-
-    #[wasm_bindgen(js_name = "getCalculationTransactionSummary")]
-    pub fn js_calculation_transaction_summary(&mut self) -> Result<JsValue, JsValue> {
-        self.updated_bounds_in_transaction();
-        if let Some(summary) = self.transaction_summary() {
-            Ok(serde_wasm_bindgen::to_value(&summary)?)
-        } else {
-            Err(JsValue::UNDEFINED)
-        }
-    }
-
-    #[wasm_bindgen(js_name = "calculationGetCells")]
-    pub fn js_calculation_get_cells(
-        &mut self,
-        get_cells: JsComputeGetCells,
-    ) -> Option<CellsForArray> {
-        self.calculation_get_cells(get_cells)
-    }
-
-    /// Populates a portion of a sheet with random float values.
-    ///
-    /// Returns a [`TransactionSummary`].
-    #[wasm_bindgen(js_name = "populateWithRandomFloats")]
-    pub fn js_populate_with_random_floats(
-        &mut self,
-        sheet_id: String,
-        region: &Rect,
-    ) -> Result<JsValue, JsValue> {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-        self.populate_with_random_floats(sheet_id, region);
-        Ok(serde_wasm_bindgen::to_value(&TransactionSummary {
-            fill_sheets_modified: vec![],
-            border_sheets_modified: vec![],
-            code_cells_modified: HashSet::new(),
-            cell_sheets_modified: HashSet::new(),
-            sheet_list_modified: false,
-            cursor: None,
-            offsets_modified: vec![],
-            save: false,
-            generate_thumbnail: false,
-            transaction_busy: false,
-        })?)
     }
 }

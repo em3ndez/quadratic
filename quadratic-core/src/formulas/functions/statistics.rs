@@ -122,7 +122,7 @@ fn get_functions() -> Vec<FormulaFunction> {
 
 #[cfg(test)]
 mod tests {
-    use crate::formulas::tests::*;
+    use crate::{formulas::tests::*, Pos};
 
     #[test]
     fn test_formula_average() {
@@ -132,13 +132,16 @@ mod tests {
         let sheet = &mut g.sheets_mut()[0];
         for x in 1..=3 {
             for y in 1..=3 {
-                sheet.set_cell_value(Pos { x, y }, x * 3 + y);
+                let _ = sheet.set_cell_value(Pos { x, y }, x * 3 + y);
             }
         }
         let sheet_id = sheet.id;
 
-        let mut ctx = Ctx::new(&g, pos![nAn1].with_sheet(sheet_id));
-        assert_eq!("7.5".to_string(), form.eval(&mut ctx).unwrap().to_string(),);
+        let mut ctx = Ctx::new(&g, pos![nAn1].to_sheet_pos(sheet_id));
+        assert_eq!(
+            "7.5".to_string(),
+            form.eval(&mut ctx, false).unwrap().to_string(),
+        );
 
         assert_eq!(
             "17",
@@ -154,7 +157,20 @@ mod tests {
         assert_eq!("0", eval_to_string(&g, "AVERAGE(,)"));
 
         // Test with no arguments
-        assert_eq!(ErrorMsg::DivideByZero, eval_to_err(&g, "AVERAGE()").msg,);
+        assert_eq!(
+            RunErrorMsg::MissingRequiredArgument {
+                func_name: "AVERAGE".into(),
+                arg_name: "numbers".into()
+            },
+            parse_formula("AVERAGE()", Pos::ORIGIN)
+                .unwrap()
+                .eval(
+                    &mut Ctx::new(&g, Pos::ORIGIN.to_sheet_pos(g.sheets()[0].id)),
+                    false
+                )
+                .unwrap_err()
+                .msg,
+        );
     }
 
     #[test]
@@ -170,7 +186,7 @@ mod tests {
             let mut g = Grid::new();
             let sheet = &mut g.sheets_mut()[0];
             for y in 0..=10 {
-                sheet.set_cell_value(Pos { x: 1, y }, y);
+                let _ = sheet.set_cell_value(Pos { x: 1, y }, y);
             }
             assert_eq!("2.5", eval_to_string(&g, "AVERAGEIF(Bn5:B10, \"<=5\")"));
         }
@@ -182,7 +198,7 @@ mod tests {
 
         // Error on range size mismatch.
         assert_eq!(
-            ErrorMsg::ExactArraySizeMismatch {
+            RunErrorMsg::ExactArraySizeMismatch {
                 expected: ArraySize::new(1, 11).unwrap(),
                 got: ArraySize::new(2, 1).unwrap(),
             },
@@ -190,14 +206,14 @@ mod tests {
         );
         // ... even if one of the arguments is just a single value.
         assert_eq!(
-            ErrorMsg::ExactArraySizeMismatch {
+            RunErrorMsg::ExactArraySizeMismatch {
                 expected: ArraySize::new(1, 11).unwrap(),
                 got: ArraySize::new(1, 1).unwrap(),
             },
             eval_to_err(&g, "AVERAGEIF(0..10, \"<=5\", 3)").msg,
         );
         assert_eq!(
-            ErrorMsg::ExactArraySizeMismatch {
+            RunErrorMsg::ExactArraySizeMismatch {
                 expected: ArraySize::new(1, 1).unwrap(),
                 got: ArraySize::new(1, 11).unwrap(),
             },
@@ -208,7 +224,20 @@ mod tests {
     #[test]
     fn test_count() {
         let g = Grid::new();
-        assert_eq!("0", eval_to_string(&g, "COUNT()"));
+        assert_eq!(
+            RunErrorMsg::MissingRequiredArgument {
+                func_name: "COUNT".into(),
+                arg_name: "numbers".into()
+            },
+            parse_formula("COUNT()", Pos::ORIGIN)
+                .unwrap()
+                .eval(
+                    &mut Ctx::new(&g, Pos::ORIGIN.to_sheet_pos(g.sheets()[0].id)),
+                    false
+                )
+                .unwrap_err()
+                .msg,
+        );
         assert_eq!("0", eval_to_string(&g, "COUNT(A1)"));
         assert_eq!("0", eval_to_string(&g, "COUNT(A1:B4)"));
         assert_eq!(
@@ -224,7 +253,20 @@ mod tests {
     #[test]
     fn test_counta() {
         let g = Grid::new();
-        assert_eq!("0", eval_to_string(&g, "COUNTA()"));
+        assert_eq!(
+            RunErrorMsg::MissingRequiredArgument {
+                func_name: "COUNTA".into(),
+                arg_name: "range".into()
+            },
+            parse_formula("COUNTA()", Pos::ORIGIN)
+                .unwrap()
+                .eval(
+                    &mut Ctx::new(&g, Pos::ORIGIN.to_sheet_pos(g.sheets()[0].id)),
+                    false
+                )
+                .unwrap_err()
+                .msg,
+        );
         assert_eq!("0", eval_to_string(&g, "COUNTA(A1)"));
         assert_eq!("0", eval_to_string(&g, "COUNTA(A1:B4)"));
         assert_eq!(
@@ -248,7 +290,7 @@ mod tests {
         let mut g = Grid::new();
         let sheet = &mut g.sheets_mut()[0];
         for y in 0..=10 {
-            sheet.set_cell_value(Pos { x: 1, y }, y);
+            let _ = sheet.set_cell_value(Pos { x: 1, y }, y);
         }
         assert_eq!("6", eval_to_string(&g, "COUNTIF(Bn5:B10, \"<=5\")"));
     }

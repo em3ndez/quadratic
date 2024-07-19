@@ -1,33 +1,53 @@
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
 import checker from 'vite-plugin-checker';
+import svgr from 'vite-plugin-svgr';
+import tsconfigPaths from 'vite-tsconfig-paths';
 
 export default defineConfig(() => {
+  const plugins = [
+    react(),
+    tsconfigPaths(),
+    svgr(),
+    checker({
+      typescript: true,
+      eslint: {
+        lintCommand: 'eslint --ext .ts,.tsx src',
+      },
+    }),
+  ];
+  if (process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_AUTH_TOKEN !== 'none') {
+    plugins.push(
+      sentryVitePlugin({
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        org: 'quadratic',
+        project: 'quadratic',
+      })
+    );
+  }
+
   return {
     build: {
       outDir: '../build',
+      sourcemap: process.env.VERCEL_ENV !== 'preview' || process.env.VITEST !== 'true', // Source map generation must be turned on
     },
+    publicDir: './public',
     assetsInclude: ['**/*.py'],
     server: {
       port: 3000,
     },
     resolve: {
+      preserveSymlinks: process.env.VERCEL_ENV !== 'preview' || process.env.VITEST !== 'true',
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+      dedupe: ['monaco-editor', 'vscode'],
     },
-    plugins: [
-      react(),
-      checker({
-        typescript: true,
-        eslint: {
-          lintCommand: 'eslint --ext .ts,.tsx src',
-        },
-      }),
-    ],
+    plugins,
     worker: {
-      format: 'iife',
+      format: 'es',
       plugins: () => [
         checker({
           typescript: true,
@@ -36,6 +56,21 @@ export default defineConfig(() => {
           },
         }),
       ],
+      rollupOptions: {
+        // this is needed because pyodide uses fetch for older builds
+        // see https://github.com/pyodide/pyodide/issues/4244
+        external: ['node-fetch'],
+      },
+    },
+    test: {
+      globals: true,
+      environment: 'happy-dom',
+    },
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        internal: path.resolve(__dirname, '_internal/email.html'),
+      },
     },
   };
 });

@@ -172,7 +172,7 @@ pub fn find_number_series(options: SeriesOptions) -> Vec<CellValue> {
     let mut current = numbers[numbers.len() - 1].to_owned();
 
     if negative {
-        current = numbers[0].to_owned();
+        numbers[0].clone_into(&mut current);
     }
 
     let calc = |val: &BigDecimal| match (&addition, &multiplication, negative) {
@@ -236,7 +236,7 @@ pub fn find_string_series(options: SeriesOptions) -> Vec<CellValue> {
                             CellValue::Text(s) => s,
                             _ => "",
                         })
-                        .collect(),
+                        .collect::<Vec<&str>>(),
                     text_series,
                 )
                 .unwrap_or(false)
@@ -311,11 +311,7 @@ pub fn is_series_key(key: &str, keys: &[&str]) -> bool {
     keys.contains(&key)
 }
 
-pub fn is_series_next_key(
-    key: &str,
-    existing_keys: &Vec<&str>,
-    all_keys: &&[&str],
-) -> Result<bool> {
+pub fn is_series_next_key(key: &str, existing_keys: &[&str], all_keys: &&[&str]) -> Result<bool> {
     let last_key = existing_keys[existing_keys.len() - 1];
     let index = all_keys
         .iter()

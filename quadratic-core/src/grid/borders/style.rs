@@ -1,12 +1,10 @@
+#[cfg(feature = "js")]
+use crate::color::Rgba;
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
-#[cfg(feature = "js")]
-use wasm_bindgen::prelude::*;
-
-use crate::color::Rgba;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "js", wasm_bindgen, derive(ts_rs::TS))]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum BorderSelection {
     All,
@@ -35,9 +33,9 @@ pub enum BorderSelection {
     Display,
     EnumString,
 )]
-#[wasm_bindgen]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub enum CellBorderLine {
     Line1,
     Line2,
@@ -45,6 +43,19 @@ pub enum CellBorderLine {
     Dotted,
     Dashed,
     Double,
+}
+
+impl CellBorderLine {
+    pub fn as_css_string(&self) -> &'static str {
+        match self {
+            CellBorderLine::Line1 => "1px solid",
+            CellBorderLine::Line2 => "2px solid",
+            CellBorderLine::Line3 => "3px solid",
+            CellBorderLine::Dotted => "1px dashed",
+            CellBorderLine::Dashed => "1px dotted",
+            CellBorderLine::Double => "3px double",
+        }
+    }
 }
 // TODO: Causes weird shadowing problem in wasm-bindgen
 // #[cfg_attr(feature = "js", wasm_bindgen)]
@@ -71,16 +82,8 @@ pub enum CellBorderLine {
 // }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[wasm_bindgen]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub struct BorderStyle {
     pub color: Rgba,
     pub line: CellBorderLine,
-}
-
-#[cfg_attr(feature = "js", wasm_bindgen)]
-impl BorderStyle {
-    #[cfg_attr(feature = "js", wasm_bindgen(constructor))]
-    pub fn new(color: Rgba, line: CellBorderLine) -> Self {
-        Self { color, line }
-    }
 }

@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 
 #[macro_use]
 mod macros;
+pub mod excel;
 mod logic;
 mod lookup;
 mod mathematics;
@@ -17,12 +18,16 @@ mod util;
 
 use super::{CellRef, Criterion, Ctx, Param, ParamKind};
 use crate::{
-    Array, Axis, CellValue, CodeResult, CoerceInto, Error, ErrorMsg, IsBlank, Span, Spanned,
+    Array, Axis, CellValue, CodeResult, CoerceInto, IsBlank, RunError, RunErrorMsg, Span, Spanned,
     SpannedIterExt, Value,
 };
 
 pub fn lookup_function(name: &str) -> Option<&'static FormulaFunction> {
-    ALL_FUNCTIONS.get(name.to_ascii_uppercase().as_str())
+    ALL_FUNCTIONS.get(
+        excel::remove_excel_function_prefix(name)
+            .to_ascii_uppercase()
+            .as_str(),
+    )
 }
 
 pub const CATEGORIES: &[FormulaFunctionCategory] = &[
@@ -94,7 +99,7 @@ impl FormulaFnArgs {
         arg_name: impl Into<Cow<'static, str>>,
     ) -> CodeResult<Spanned<Value>> {
         self.take_next().ok_or_else(|| {
-            ErrorMsg::MissingRequiredArgument {
+            RunErrorMsg::MissingRequiredArgument {
                 func_name: self.func_name.into(),
                 arg_name: arg_name.into(),
             }
@@ -106,10 +111,22 @@ impl FormulaFnArgs {
         std::mem::take(&mut self.values).into_iter()
     }
 
+    pub fn error_if_no_more_args(&self, arg_name: impl Into<Cow<'static, str>>) -> CodeResult<()> {
+        if !self.values.is_empty() {
+            Ok(())
+        } else {
+            Err(RunErrorMsg::MissingRequiredArgument {
+                func_name: self.func_name.into(),
+                arg_name: arg_name.into(),
+            }
+            .with_span(self.span))
+        }
+    }
+
     /// Returns an error if there are any arguments that have not been taken.
     pub fn error_if_more_args(&self) -> CodeResult<()> {
         if let Some(next_arg) = self.values.front() {
-            Err(ErrorMsg::TooManyArguments {
+            Err(RunErrorMsg::TooManyArguments {
                 func_name: self.func_name.into(),
                 max_arg_count: self.args_popped,
             }
@@ -121,7 +138,7 @@ impl FormulaFnArgs {
 }
 
 /// Function pointer that represents the body of a formula function.
-pub type FormulaFn = for<'a> fn(&'a mut Ctx<'_>, FormulaFnArgs) -> CodeResult<Value>;
+pub type FormulaFn = for<'a> fn(&'a mut Ctx<'_>, bool, FormulaFnArgs) -> CodeResult<Value>;
 
 /// Formula function with associated metadata.
 pub struct FormulaFunction {

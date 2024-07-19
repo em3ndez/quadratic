@@ -11,6 +11,7 @@ node_modules
 
 # production
 /build
+quadratic-shared/*.js
 
 # misc
 .DS_Store
@@ -34,8 +35,13 @@ venv/*
 .env.local
 
 # Generated Rust files
+/target
+quadratic-connection/target/
 quadratic-core/target/
 quadratic-core/tmp.txt
+quadratic-files/target/
+quadratic-multiplayer/target/
+quadratic-multiplayer/updateAlertVersion.json
 
 # Generated JS files
 quadratic-api/node_modules/
@@ -44,4 +50,21 @@ quadratic-api/.env.local
 quadratic-api/dist
 
 # Code Coverage
+quadratic-connection/coverage
 quadratic-core/coverage
+quadratic-files/coverage
+quadratic-multiplayer/coverage
+
+# Python Deployment files
+quadratic-kernels/python-wasm/dist/
+quadratic-client/public/*.whl
+
+# Docker Data Volumes
+docker/localstack/data
+docker/redis/data
+docker/postgres/data
+docker/postgres-connection/data
+docker/mysql-connection/data
+
+# JMeter
+jmeter.log

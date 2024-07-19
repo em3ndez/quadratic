@@ -42,7 +42,7 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::color::Rgba;
-    use crate::grid::borders::sheet::set_region_border_selection;
+    use crate::grid::borders::sheet::set_rect_border_selection;
     use crate::grid::{BorderSelection, BorderStyle, CellBorderLine, SheetId};
     use crate::{Pos, Rect};
 
@@ -57,7 +57,7 @@ mod tests {
     //             let mut sheet =
     //                 Sheet::new(SheetId::new(), "Test Sheet".to_string(), "".to_string());
     //             let rect = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 506, y: 515 });
-    //             let region = sheet.region(rect);
+    //             let (region, _) = sheet.region(rect);
     //
     //             let selection = vec![BorderSelection::All];
     //
@@ -78,7 +78,7 @@ mod tests {
     // }
 
     mod vertical {
-        use crate::grid::set_region_borders;
+        use crate::grid::set_rect_borders;
 
         use super::*;
 
@@ -86,16 +86,15 @@ mod tests {
         fn single_block() {
             let mut sheet = Sheet::new(SheetId::new(), "Test Sheet".to_string(), "".to_string());
             let rect = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
-            let region = sheet.region(rect);
 
             let selection = vec![BorderSelection::All];
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region, selection, Some(style));
+            set_rect_border_selection(&mut sheet, &rect, selection, Some(style));
 
             let vertical_render = get_render_vertical_borders(&sheet);
 
@@ -115,19 +114,16 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 4, y: 10 });
             let rect_2 = Rect::new_span(Pos { x: 4, y: 11 }, Pos { x: 5, y: 11 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style));
 
             let vertical_render = get_render_vertical_borders(&sheet);
 
@@ -149,19 +145,16 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
             let rect_2 = Rect::new_span(Pos { x: 3, y: 17 }, Pos { x: 9, y: 20 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style));
 
             let vertical_render = get_render_vertical_borders(&sheet);
 
@@ -193,23 +186,20 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
             let rect_2 = Rect::new_span(Pos { x: 2, y: 11 }, Pos { x: 7, y: 14 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style_1 = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
             let style_2 = BorderStyle {
-                color: Rgba::from_str("#FFFFFF").unwrap(),
+                color: Rgba::color_from_str("#FFFFFF").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style_1));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style_2));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style_1));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style_2));
 
             let vertical_render = get_render_vertical_borders(&sheet);
 
@@ -238,24 +228,20 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 4, y: 11 });
             let rect_2 = Rect::new_span(Pos { x: 5, y: 10 }, Pos { x: 6, y: 11 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style));
             let vertical_render_initial = get_render_vertical_borders(&sheet);
 
-            let replaced =
-                set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style));
+            let replaced = set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style));
 
-            set_region_borders(&mut sheet, vec![region_2], replaced); // Undo
+            set_rect_borders(&mut sheet, &rect_2, replaced); // Undo
             let vertical_render_after_undo = get_render_vertical_borders(&sheet);
 
             assert_eq!(
@@ -273,28 +259,25 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
             let rect_2 = Rect::new_span(Pos { x: 2, y: 11 }, Pos { x: 7, y: 14 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style_1 = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
             let style_2 = BorderStyle {
-                color: Rgba::from_str("#FFFFFF").unwrap(),
+                color: Rgba::color_from_str("#FFFFFF").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style_1));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style_1));
             let vertical_render_initial = get_render_vertical_borders(&sheet);
 
             let replaced =
-                set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style_2));
+                set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style_2));
 
-            set_region_borders(&mut sheet, vec![region_2], replaced); // Undo
+            set_rect_borders(&mut sheet, &rect_2, replaced); // Undo
             let vertical_render_after_undo = get_render_vertical_borders(&sheet);
 
             assert_eq!(
@@ -308,7 +291,7 @@ mod tests {
     }
 
     mod horizontal {
-        use crate::grid::set_region_borders;
+        use crate::grid::set_rect_borders;
 
         use super::*;
 
@@ -316,16 +299,15 @@ mod tests {
         fn single_block() {
             let mut sheet = Sheet::new(SheetId::new(), "Test Sheet".to_string(), "".to_string());
             let rect = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
-            let region = sheet.region(rect);
 
             let selection = vec![BorderSelection::All];
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region, selection, Some(style));
+            set_rect_border_selection(&mut sheet, &rect, selection, Some(style));
 
             let horizontal_render = get_render_horizontal_borders(&sheet);
 
@@ -345,19 +327,16 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 3, y: 11 });
             let rect_2 = Rect::new_span(Pos { x: 4, y: 11 }, Pos { x: 4, y: 12 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style));
 
             let horizontal_render = get_render_horizontal_borders(&sheet);
 
@@ -379,19 +358,16 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 5, y: 13 });
             let rect_2 = Rect::new_span(Pos { x: 7, y: 10 }, Pos { x: 10, y: 15 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style));
 
             let horizontal_render = get_render_horizontal_borders(&sheet);
 
@@ -419,23 +395,20 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 2, y: 11 }, Pos { x: 7, y: 14 });
             let rect_2 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style_1 = BorderStyle {
-                color: Rgba::from_str("#FFFFFF").unwrap(),
+                color: Rgba::color_from_str("#FFFFFF").unwrap(),
                 line: CellBorderLine::Line1,
             };
             let style_2 = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style_1));
-            set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style_2));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style_1));
+            set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style_2));
 
             let horizontal_render = get_render_horizontal_borders(&sheet);
 
@@ -464,28 +437,25 @@ mod tests {
             let rect_1 = Rect::new_span(Pos { x: 2, y: 11 }, Pos { x: 7, y: 14 });
             let rect_2 = Rect::new_span(Pos { x: 3, y: 10 }, Pos { x: 6, y: 15 });
 
-            let region_1 = sheet.region(rect_1);
-            let region_2 = sheet.region(rect_2);
-
             let selection_1 = vec![BorderSelection::All];
             let selection_2 = selection_1.clone();
 
             let style_1 = BorderStyle {
-                color: Rgba::from_str("#FFFFFF").unwrap(),
+                color: Rgba::color_from_str("#FFFFFF").unwrap(),
                 line: CellBorderLine::Line1,
             };
             let style_2 = BorderStyle {
-                color: Rgba::from_str("#000000").unwrap(),
+                color: Rgba::color_from_str("#000000").unwrap(),
                 line: CellBorderLine::Line1,
             };
 
-            set_region_border_selection(&mut sheet, &region_1, selection_1, Some(style_1));
+            set_rect_border_selection(&mut sheet, &rect_1, selection_1, Some(style_1));
             let horizontal_render_initial = get_render_horizontal_borders(&sheet);
 
             let replaced =
-                set_region_border_selection(&mut sheet, &region_2, selection_2, Some(style_2));
+                set_rect_border_selection(&mut sheet, &rect_2, selection_2, Some(style_2));
 
-            set_region_borders(&mut sheet, vec![region_2], replaced); // Undo
+            set_rect_borders(&mut sheet, &rect_2, replaced); // Undo
             let horizontal_render_after_undo = get_render_horizontal_borders(&sheet);
 
             assert_eq!(

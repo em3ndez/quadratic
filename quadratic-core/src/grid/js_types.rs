@@ -1,15 +1,21 @@
-use std::ops::{BitOr, BitOrAssign};
-
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::wasm_bindgen;
 
-use super::formatting::{BoolSummary, CellAlign, CellWrap};
+use super::formatting::{CellAlign, CellWrap};
 use super::CodeCellLanguage;
-use crate::controller::transaction_summary::TransactionSummary;
 use crate::grid::BorderStyle;
-use crate::Pos;
+use crate::{Pos, SheetRect};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+pub enum JsRenderCellSpecial {
+    Chart,
+    SpillError,
+    RunError,
+    True,
+    False,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct JsRenderCell {
@@ -32,6 +38,26 @@ pub struct JsRenderCell {
     pub italic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_color: Option<String>,
+
+    pub special: Option<JsRenderCellSpecial>,
+}
+
+#[cfg(test)]
+impl JsRenderCell {
+    pub fn new_number(x: i64, y: i64, value: isize, language: Option<CodeCellLanguage>) -> Self {
+        Self {
+            x,
+            y,
+            value: value.to_string(),
+            language,
+            align: Some(CellAlign::Right),
+            wrap: None,
+            bold: None,
+            italic: None,
+            text_color: None,
+            special: None,
+        }
+    }
 }
 
 impl From<Pos> for JsRenderCell {
@@ -46,12 +72,12 @@ impl From<Pos> for JsRenderCell {
             bold: None,
             italic: None,
             text_color: None,
+            special: None,
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 pub struct JsRenderFill {
     pub x: i64,
     pub y: i64,
@@ -61,13 +87,18 @@ pub struct JsRenderFill {
     pub color: String,
 }
 
-#[derive(Debug, PartialEq)]
-#[wasm_bindgen]
+#[derive(Default, Serialize, Deserialize, Debug, Clone, ts_rs::TS, PartialEq)]
+pub struct JsSheetFill {
+    pub columns: Vec<(i64, (String, i64))>,
+    pub rows: Vec<(i64, (String, i64))>,
+    pub all: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub struct JsRenderBorders {
-    horizontal: Vec<JsRenderBorder>,
-    vertical: Vec<JsRenderBorder>,
-    index_horizontal: u32,
-    index_vertical: u32,
+    pub horizontal: Vec<JsRenderBorder>,
+    pub vertical: Vec<JsRenderBorder>,
 }
 
 impl JsRenderBorders {
@@ -75,40 +106,12 @@ impl JsRenderBorders {
         JsRenderBorders {
             horizontal,
             vertical,
-            index_horizontal: 0,
-            index_vertical: 0,
         }
-    }
-    pub fn get_horizontal(&self) -> &[JsRenderBorder] {
-        &self.horizontal
-    }
-    pub fn get_vertical(&self) -> &[JsRenderBorder] {
-        &self.vertical
-    }
-}
-#[wasm_bindgen]
-impl JsRenderBorders {
-    #[wasm_bindgen]
-    pub fn horizontal_next(&mut self) -> Option<JsRenderBorder> {
-        let ret = self.horizontal.get(self.index_horizontal as usize).cloned();
-        self.index_horizontal += 1;
-        ret
-    }
-    #[wasm_bindgen]
-    pub fn vertical_next(&mut self) -> Option<JsRenderBorder> {
-        let ret = self.vertical.get(self.index_vertical as usize).cloned();
-        self.index_vertical += 1;
-        ret
-    }
-    #[wasm_bindgen]
-    pub fn reset(&mut self) {
-        self.index_horizontal = 0;
-        self.index_vertical = 0;
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
-#[wasm_bindgen]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub struct JsRenderBorder {
     pub x: i64,
     pub y: i64,
@@ -131,45 +134,59 @@ impl JsRenderBorder {
 pub struct CellFormatSummary {
     pub bold: Option<bool>,
     pub italic: Option<bool>,
+    pub commas: Option<bool>,
 
     pub text_color: Option<String>,
     pub fill_color: Option<String>,
 }
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, Hash)]
+
+#[derive(Serialize, PartialEq, Debug)]
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
-pub struct FormattingSummary {
-    pub bold: BoolSummary,
-    pub italic: BoolSummary,
-}
-impl BitOr for FormattingSummary {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        FormattingSummary {
-            bold: self.bold | rhs.bold,
-            italic: self.italic | rhs.italic,
-        }
-    }
-}
-impl BitOrAssign for FormattingSummary {
-    fn bitor_assign(&mut self, rhs: Self) {
-        *self = self.clone() | rhs;
-    }
+pub struct JsReturnInfo {
+    pub line_number: Option<u32>,
+    pub output_type: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[wasm_bindgen]
-pub struct JsRenderCodeCell {
+#[derive(Serialize, PartialEq, Debug)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+pub struct JsCodeCell {
     pub x: i64,
     pub y: i64,
+    pub code_string: String,
+    pub language: CodeCellLanguage,
+    pub std_out: Option<String>,
+    pub std_err: Option<String>,
+    pub evaluation_result: Option<String>,
+    pub spill_error: Option<Vec<Pos>>,
+    pub return_info: Option<JsReturnInfo>,
+    pub cells_accessed: Option<Vec<SheetRect>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+pub struct JsRenderCodeCell {
+    pub x: i32,
+    pub y: i32,
     pub w: u32,
     pub h: u32,
     pub language: CodeCellLanguage,
     pub state: JsRenderCodeCellState,
+    pub spill_error: Option<Vec<Pos>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+pub struct JsHtmlOutput {
+    pub sheet_id: String,
+    pub x: i64,
+    pub y: i64,
+    pub html: Option<String>,
+    pub w: Option<String>,
+    pub h: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[wasm_bindgen]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub enum JsRenderCodeCellState {
     NotYetRun,
     RunError,
@@ -181,7 +198,6 @@ pub enum JsRenderCodeCellState {
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct JsClipboard {
-    pub summary: Option<TransactionSummary>,
     pub plain_text: String,
     pub html: String,
 }

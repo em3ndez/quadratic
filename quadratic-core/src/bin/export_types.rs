@@ -1,8 +1,32 @@
 use std::fs::create_dir_all;
 
+use controller::operations::clipboard::PasteSpecial;
+use grid::{formats::format::Format, js_types::JsSheetFill};
 use quadratic_core::{
-    controller::transaction_summary::{CellSheetsModified, TransactionSummary},
-    *,
+    color::Rgba,
+    controller::{
+        active_transactions::transaction_name::TransactionName,
+        execution::run_code::get_cells::JsGetCellResponse, transaction_types::JsCodeResult,
+    },
+    grid::{
+        js_types::{
+            JsCodeCell, JsHtmlOutput, JsRenderBorder, JsRenderBorders, JsRenderCell,
+            JsRenderCellSpecial, JsRenderCodeCell, JsRenderCodeCellState,
+        },
+        sheet::search::SearchOptions,
+        BorderSelection, BorderStyle, CellBorderLine, CodeCellLanguage, ConnectionKind,
+    },
+    selection::Selection,
+    sheet_offsets::{
+        resize_transient::TransientResize,
+        sheet_offsets_wasm::{ColumnRow, Placement},
+    },
+    wasm_bindings::controller::{
+        bounds::MinMax,
+        sheet_info::{SheetBounds, SheetInfo},
+        summarize::SummarizeSelectionResult,
+    },
+    Rect, *,
 };
 use ts_rs::TS;
 
@@ -21,45 +45,67 @@ fn main() {
     s += "// Do not modify it manually.\n\n";
 
     s += &generate_type_declarations!(
-        TransactionSummary,
-        CellSheetsModified,
+        CodeCellLanguage,
+        ConnectionKind,
+        JsHtmlOutput,
+        JsCodeCell,
+        JsRenderCodeCell,
+        JsRenderCodeCellState,
+        JsRenderCellSpecial,
+        JsRenderCell,
         formulas::RangeRef,
         formulas::CellRef,
         formulas::CellRefCoord,
         grid::GridBounds,
-        // grid::CodeCellValue,
-        // grid::CodeCellRunOutput,
-        // grid::CodeCellRunResult,
         grid::CellAlign,
         grid::CellWrap,
         grid::NumericFormat,
         grid::NumericFormatKind,
-        grid::BoolSummary,
         grid::SheetId,
-        grid::RowId,
-        grid::ColumnId,
-        grid::CellRef,
         grid::js_types::JsRenderCell,
         grid::js_types::JsRenderFill,
-        grid::js_types::FormattingSummary,
         grid::js_types::CellFormatSummary,
         grid::js_types::JsClipboard,
-        // values
         ArraySize,
         Axis,
-        // Array,
-        // Value,
         Instant,
         Duration,
-        Error,
-        ErrorMsg,
+        RunError,
+        RunErrorMsg,
         Pos,
         Rect,
         Span,
+        SearchOptions,
+        SheetPos,
+        SheetRect,
+        Selection,
+        Placement,
+        ColumnRow,
+        SheetInfo,
+        PasteSpecial,
+        Rgba,
+        CellBorderLine,
+        BorderSelection,
+        BorderStyle,
+        JsRenderBorder,
+        JsRenderBorders,
+        JsCodeResult,
+        MinMax,
+        TransientResize,
+        SheetBounds,
+        TransactionName,
+        JsGetCellResponse,
+        SummarizeSelectionResult,
+        Format,
+        JsSheetFill,
+        ColumnRow,
     );
 
-    if create_dir_all("../quadratic-client/src/quadratic-core").is_ok() {
-        std::fs::write("../quadratic-client/src/quadratic-core/types.d.ts", s)
-            .expect("failed to write types file");
+    if create_dir_all("../quadratic-client/src/app/quadratic-core-types").is_ok() {
+        std::fs::write(
+            "../quadratic-client/src/app/quadratic-core-types/index.d.ts",
+            s,
+        )
+        .expect("failed to write types file");
     }
 }

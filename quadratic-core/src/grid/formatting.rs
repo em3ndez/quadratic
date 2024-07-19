@@ -1,10 +1,23 @@
-use std::fmt;
-use std::ops::{BitOr, BitOrAssign};
-
+use super::{block::SameValue, Column, ColumnData};
+use crate::RunLengthEncoding;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use strum_macros::{Display, EnumString};
 
-use super::{block::SameValue, Column, ColumnData};
+/// Array of a single cell formatting attribute.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum CellFmtArray {
+    Align(RunLengthEncoding<Option<CellAlign>>),
+    Wrap(RunLengthEncoding<Option<CellWrap>>),
+    NumericFormat(RunLengthEncoding<Option<NumericFormat>>),
+    NumericDecimals(RunLengthEncoding<Option<i16>>),
+    NumericCommas(RunLengthEncoding<Option<bool>>),
+    Bold(RunLengthEncoding<Option<bool>>),
+    Italic(RunLengthEncoding<Option<bool>>),
+    TextColor(RunLengthEncoding<Option<String>>),
+    FillColor(RunLengthEncoding<Option<String>>),
+    RenderSize(RunLengthEncoding<Option<RenderSize>>),
+}
 
 /// Cell formatting attribute.
 pub trait CellFmtAttr {
@@ -103,6 +116,16 @@ impl CellFmtAttr for FillColor {
     }
 }
 
+impl CellFmtAttr for RenderSize {
+    type Value = Self;
+    fn column_data_ref(column: &Column) -> &ColumnData<SameValue<Self::Value>> {
+        &column.render_size
+    }
+    fn column_data_mut(column: &mut Column) -> &mut ColumnData<SameValue<Self::Value>> {
+        &mut column.render_size
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash, Display, EnumString)]
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +147,16 @@ pub enum CellWrap {
     Clip,
 }
 
+impl CellWrap {
+    pub fn as_css_string(&self) -> &'static str {
+        match self {
+            CellWrap::Overflow => "overflow: visible; white-space: nowrap;",
+            CellWrap::Wrap => "overflow: hidden; white-space: normal; word-wrap: break-word;",
+            CellWrap::Clip => "overflow: hidden; white-space: clip;",
+        }
+    }
+}
+
 #[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub struct NumericFormat {
@@ -132,8 +165,16 @@ pub struct NumericFormat {
     pub symbol: Option<String>,
 }
 
+#[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
+/// Measures DOM element size in pixels.
+pub struct RenderSize {
+    pub w: String,
+    pub h: String,
+}
+
 #[derive(
-    Default, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Display, EnumString,
+    Default, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Display, EnumString, Copy,
 )]
 #[cfg_attr(feature = "js", derive(ts_rs::TS))]
 #[serde(rename_all = "UPPERCASE")]
@@ -144,30 +185,4 @@ pub enum NumericFormatKind {
     Currency, // { symbol: String }, // TODO: would be nice if this were just a single char (and it could be)
     Percentage,
     Exponential,
-}
-
-/// Whether a set of booleans has any `true` values and/or any `false` values.
-#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "js", derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct BoolSummary {
-    /// Whether any values are true.
-    pub is_any_true: bool,
-    /// Whether any values are false.
-    pub is_any_false: bool,
-}
-impl BitOr for BoolSummary {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        BoolSummary {
-            is_any_true: self.is_any_true | rhs.is_any_true,
-            is_any_false: self.is_any_false | rhs.is_any_false,
-        }
-    }
-}
-impl BitOrAssign for BoolSummary {
-    fn bitor_assign(&mut self, rhs: Self) {
-        *self = *self | rhs;
-    }
 }

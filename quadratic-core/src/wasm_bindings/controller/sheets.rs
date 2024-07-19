@@ -4,8 +4,8 @@ use super::*;
 impl GridController {
     /// Adds an empty sheet to the grid. Returns a [`TransactionSummary`].
     #[wasm_bindgen(js_name = "addSheet")]
-    pub fn js_add_sheet(&mut self, cursor: Option<String>) -> Result<JsValue, JsValue> {
-        Ok(serde_wasm_bindgen::to_value(&self.add_sheet(cursor))?)
+    pub fn js_add_sheet(&mut self, cursor: Option<String>) {
+        self.add_sheet(cursor);
     }
     /// Gets a list of ordered sheet ids
     #[wasm_bindgen(js_name = "getSheetIds")]
@@ -56,8 +56,10 @@ impl GridController {
     /// Returns the order string for a sheet.
     #[wasm_bindgen(js_name = "getSheetOrder")]
     pub fn js_sheet_order(&self, sheet_id: String) -> String {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-        let sheet = self.grid().sheet_from_id(sheet_id);
+        // todo: should return a Result
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return "a0".to_string();
+        };
         sheet.order.clone()
     }
     /// Returns the ID of the sheet at the given index.
@@ -66,45 +68,32 @@ impl GridController {
         let sheet_id = SheetId::from_str(&id).unwrap();
         self.grid().sheet_id_to_index(sheet_id)
     }
-    /// Returns the index of the sheet with the given ID.
-    #[wasm_bindgen(js_name = "sheetIndexToId")]
-    pub fn js_sheet_index_to_id(&self, index: usize) -> Result<String, JsValue> {
-        let sheet_id = self.grid().sheet_index_to_id(index);
-        match sheet_id {
-            Some(sheet_id) => Ok(sheet_id.to_string()),
-            None => Err(JsValue::UNDEFINED),
-        }
-    }
 
     #[wasm_bindgen(js_name = "getSheetName")]
     pub fn js_sheet_name(&self, sheet_id: String) -> String {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-        let sheet = self.grid().sheet_from_id(sheet_id);
+        // todo: should return a Result
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return "Sheet".into();
+        };
         sheet.name.clone()
     }
 
     #[wasm_bindgen(js_name = "getSheetColor")]
     pub fn js_sheet_color(&self, sheet_id: String) -> String {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-        let sheet = self.grid().sheet_from_id(sheet_id);
+        // todo: should return a Result
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return "".to_string();
+        };
         sheet.color.clone().unwrap_or_default()
     }
 
-    /// Returns a code cell as a [`TransactionSummary`].
     #[wasm_bindgen(js_name = "setSheetName")]
-    pub fn js_set_sheet_name(
-        &mut self,
-        sheet_id: String,
-        name: String,
-        cursor: Option<String>,
-    ) -> Result<JsValue, JsValue> {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-        Ok(serde_wasm_bindgen::to_value(
-            &self.set_sheet_name(sheet_id, name, cursor),
-        )?)
+    pub fn js_set_sheet_name(&mut self, sheet_id: String, name: String, cursor: Option<String>) {
+        if let Ok(sheet_id) = SheetId::from_str(&sheet_id) {
+            self.set_sheet_name(sheet_id, name, cursor);
+        }
     }
 
-    /// Returns a code cell as a [`TransactionSummary`].
     #[wasm_bindgen(js_name = "setSheetColor")]
     pub fn js_set_sheet_color(
         &mut self,

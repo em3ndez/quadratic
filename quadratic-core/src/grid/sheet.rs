@@ -1,29 +1,36 @@
-use std::collections::{btree_map, BTreeMap, HashMap};
-use std::ops::Range;
+use std::collections::{btree_map, BTreeMap};
 use std::str::FromStr;
 
-use bigdecimal::BigDecimal;
-use itertools::Itertools;
+use bigdecimal::{BigDecimal, RoundingMode};
+use indexmap::IndexMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use self::sheet_offsets::SheetOffsets;
 use super::bounds::GridBounds;
-use super::code::CodeCellValue;
 use super::column::Column;
-use super::formatting::{BoolSummary, CellFmtAttr};
-use super::ids::{CellRef, ColumnId, IdMap, RowId, SheetId};
-use super::js_types::{CellFormatSummary, FormattingSummary};
-use super::response::{GetIdResponse, SetCellResponse};
-use super::{NumericFormat, NumericFormatKind, RegionRef};
+use super::formats::format::Format;
+use super::formatting::CellFmtAttr;
+use super::ids::SheetId;
+use super::js_types::CellFormatSummary;
+use super::{CodeRun, NumericFormatKind};
 use crate::grid::{borders, SheetBorders};
-use crate::{Array, ArraySize, CellValue, IsBlank, Pos, Rect};
+use crate::sheet_offsets::SheetOffsets;
+use crate::{Array, CellValue, Pos, Rect};
 
 pub mod bounds;
-pub mod cells;
+pub mod cell_array;
+pub mod cell_values;
+pub mod clipboard;
 pub mod code;
+pub mod formats;
+pub mod formatting;
 pub mod rendering;
-pub mod sheet_offsets;
+pub mod search;
+pub mod selection;
+pub mod send_render;
+pub mod sheet_test;
+
+pub mod summarize;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Sheet {
@@ -32,18 +39,43 @@ pub struct Sheet {
     pub color: Option<String>,
     pub order: String,
 
-    pub(super) column_ids: IdMap<ColumnId, i64>,
-    pub(super) row_ids: IdMap<RowId, i64>,
-
     pub offsets: SheetOffsets,
 
     #[serde(with = "crate::util::btreemap_serde")]
-    pub(super) columns: BTreeMap<i64, Column>,
+    pub columns: BTreeMap<i64, Column>,
     pub(super) borders: SheetBorders,
-    #[serde(with = "crate::util::hashmap_serde")]
-    pub code_cells: HashMap<CellRef, CodeCellValue>,
 
+    #[serde(with = "crate::util::indexmap_serde")]
+    pub code_runs: IndexMap<Pos, CodeRun>,
+
+    // todo: we need to redo this struct to track the timestamp for all formats
+    // applied to column and rows to properly use the latest column or row
+    // formatting. The current implementation only stores the latest format for
+    // fill color (which I mistakenly thought would be the only conflict). This
+    // regrettably requires a change to the file format since it will break
+    // existing use cases.
+
+    // Column/Row, and All formatting. The second tuple stores the timestamp for
+    // the fill_color, which is used to determine the z-order for overlapping
+    // column and row fills.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "crate::util::btreemap_serde"
+    )]
+    pub formats_columns: BTreeMap<i64, (Format, i64)>,
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "crate::util::btreemap_serde"
+    )]
+    pub formats_rows: BTreeMap<i64, (Format, i64)>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format_all: Option<Format>,
+
+    // bounds for the grid with only data
     pub(super) data_bounds: GridBounds,
+
+    // bounds for the gird with only formatting
     pub(super) format_bounds: GridBounds,
 }
 impl Sheet {
@@ -55,12 +87,13 @@ impl Sheet {
             color: None,
             order,
 
-            column_ids: IdMap::new(),
-            row_ids: IdMap::new(),
-
             columns: BTreeMap::new(),
             borders: SheetBorders::new(),
-            code_cells: HashMap::new(),
+            code_runs: IndexMap::new(),
+
+            formats_columns: BTreeMap::new(),
+            formats_rows: BTreeMap::new(),
+            format_all: None,
 
             data_bounds: GridBounds::Empty,
             format_bounds: GridBounds::Empty,
@@ -72,134 +105,134 @@ impl Sheet {
     // creates a Sheet for testing
     #[cfg(test)]
     pub fn test() -> Self {
-        Sheet::new(SheetId::new(), String::from("name"), String::from("A0"))
+        Sheet::new(SheetId::test(), String::from("name"), String::from("A0"))
     }
 
     /// Populates the current sheet with random values
-    pub fn with_random_floats(&mut self, region: &Rect) {
+    /// Should only be used for testing (as it will not propagate in multiplayer)
+    pub fn random_numbers(&mut self, rect: &Rect) {
         self.columns.clear();
         let mut rng = rand::thread_rng();
-        for x in region.x_range() {
-            let (_, column) = self.get_or_create_column(x);
-            for y in region.y_range() {
+        for x in rect.x_range() {
+            for y in rect.y_range() {
+                let column = self.get_or_create_column(x);
                 let value = rng.gen_range(-10000..=10000).to_string();
-                column.values.set(
-                    y,
-                    Some(CellValue::Number(BigDecimal::from_str(&value).unwrap())),
-                );
+                column
+                    .values
+                    .insert(y, CellValue::Number(BigDecimal::from_str(&value).unwrap()));
             }
         }
         self.recalculate_bounds();
     }
 
-    /// Sets a cell value and returns a response object, which contains column &
-    /// row IDs and the old cell value. Returns `None` if the cell was deleted
-    /// and did not previously exist (so no change is needed). The reason for
-    /// this is that the column and/or row may never have been generated,
-    /// because there's no need.
-    pub fn set_cell_value(
-        &mut self,
-        pos: Pos,
-        value: impl Into<CellValue>,
-    ) -> Option<SetCellResponse<CellValue>> {
+    /// Sets a cell value and returns the old cell value. Returns `None` if the cell was deleted
+    /// and did not previously exist (so no change is needed).
+    pub fn set_cell_value(&mut self, pos: Pos, value: impl Into<CellValue>) -> Option<CellValue> {
         let value = value.into();
-        let is_blank = value.is_blank();
-        let value: Option<CellValue> = if is_blank { None } else { Some(value) };
+        let is_empty = value.is_blank_or_empty_string();
+        let value: Option<CellValue> = if is_empty { None } else { Some(value) };
+
+        // if there's no value and the column doesn't exist, then nothing more needs to be done
         if value.is_none() && !self.columns.contains_key(&pos.x) {
             return None;
         }
-
-        let (column_response, column) = self.get_or_create_column(pos.x);
-        let old_value = column.values.set(pos.y, value).unwrap_or_default();
-
-        let row_response = self.get_or_create_row(pos.y);
-        Some(SetCellResponse {
-            column: column_response,
-            row: row_response,
-            old_value,
-        })
+        let column = self.get_or_create_column(pos.x);
+        if let Some(value) = value {
+            column.values.insert(pos.y, value)
+        } else {
+            column.values.remove(&pos.y)
+        }
     }
 
     /// Deletes all cell values in a region. This does not affect:
     ///
     /// - Formatting
     /// - Spilled cells (unless the source is within `region`)
-    pub fn delete_cell_values(&mut self, region: Rect) -> (Vec<ColumnId>, Vec<RowId>, Array) {
-        let row_ids = region
-            .y_range()
-            .filter_map(|y| self.get_row(y))
-            .collect_vec();
-        let mut column_ids = vec![];
+    pub fn delete_cell_values(&mut self, rect: Rect) -> Array {
+        let mut old_cell_values_array = Array::new_empty(rect.size());
 
-        let mut old_cell_values_array = Array::new_empty(region.size());
-
-        for x in region.x_range() {
+        for x in rect.x_range() {
             let Some(column) = self.columns.get_mut(&x) else {
                 continue;
             };
-            column_ids.push(column.id);
-            let removed = column.values.remove_range(region.y_range());
-            for block in removed {
-                for y in block.range() {
-                    let array_x = (x - region.min.x) as u32;
-                    let array_y = (y - region.min.y) as u32;
-                    let Some(value) = block.get(y) else { continue };
+            let filtered = column
+                .values
+                .range(rect.y_range())
+                .map(|(y, _)| *y)
+                .collect::<Vec<_>>();
+            let removed = filtered
+                .iter()
+                .map(|y| (*y, column.values.remove(y)))
+                .collect::<Vec<_>>();
+            for cell in removed {
+                let array_x = (x - rect.min.x) as u32;
+                let array_y = (cell.0 - rect.min.y) as u32;
+                if let Some(cell_value) = cell.1 {
                     old_cell_values_array
-                        .set(array_x, array_y, value)
+                        .set(array_x, array_y, cell_value)
                         .expect("error inserting value into array of old cell values");
                 }
             }
         }
 
-        for cell_ref in self.iter_code_cells_locations_in_region(region) {
-            // TODO: unspill!
-            self.code_cells.remove(&cell_ref);
-        }
+        // remove code_cells where the rect overlaps the anchor cell
+        self.code_runs.retain(|pos, _| !rect.contains(*pos));
 
-        (column_ids, row_ids, old_cell_values_array)
+        old_cell_values_array
+    }
+
+    pub fn iter_columns(&self) -> impl Iterator<Item = (&i64, &Column)> {
+        self.columns.iter()
     }
 
     /// Sets or deletes borders in a region.
-    pub fn set_region_borders(
-        &mut self,
-        region: &RegionRef,
-        borders: SheetBorders,
-    ) -> SheetBorders {
-        borders::set_region_borders(self, vec![region.clone()], borders)
+    pub fn set_region_borders(&mut self, rect: &Rect, borders: SheetBorders) -> SheetBorders {
+        borders::set_rect_borders(self, rect, borders)
     }
 
     /// Gets borders in a region.
-    pub fn get_region_borders(&self, region: RegionRef) -> SheetBorders {
-        borders::get_region_borders(self, vec![region])
+    pub fn get_rect_borders(&self, rect: Rect) -> SheetBorders {
+        borders::get_rect_borders(self, &rect)
     }
 
-    /// Returns the value of a cell (i.e., what would be returned if code asked
+    /// Returns the cell_value at a Pos using both column.values and code_runs (i.e., what would be returned if code asked
     /// for it).
-    pub fn get_cell_value(&self, pos: Pos) -> Option<CellValue> {
-        let column = self.get_column(pos.x)?;
-        None.or_else(|| self.get_code_cell_value(pos))
-            .or_else(|| column.values.get(pos.y))
+    pub fn display_value(&self, pos: Pos) -> Option<CellValue> {
+        let cell_value = self
+            .get_column(pos.x)
+            .and_then(|column| column.values.get(&pos.y));
+
+        // if CellValue::Code, then we need to get the value from code_runs
+        if let Some(cell_value) = cell_value {
+            match cell_value {
+                CellValue::Code(_) => self
+                    .code_runs
+                    .get(&pos)
+                    .and_then(|run| run.cell_value_at(0, 0)),
+                CellValue::Blank => self.get_code_cell_value(pos),
+                _ => Some(cell_value.clone()),
+            }
+        } else {
+            // if there is no CellValue at Pos, then we still need to check code_runs
+            self.get_code_cell_value(pos)
+        }
     }
 
-    pub fn get_cell_value_only(&self, pos: Pos) -> Option<CellValue> {
+    /// Returns the cell_value at the Pos in column.values. This does not check or return results within code_runs.
+    pub fn cell_value(&self, pos: Pos) -> Option<CellValue> {
         let column = self.get_column(pos.x)?;
-        column.values.get(pos.y)
+        column.values.get(&pos.y).cloned()
+    }
+
+    pub fn cell_value_ref(&self, pos: Pos) -> Option<&CellValue> {
+        let column = self.get_column(pos.x)?;
+        column.values.get(&pos.y)
     }
 
     /// Returns a formatting property of a cell.
     pub fn get_formatting_value<A: CellFmtAttr>(&self, pos: Pos) -> Option<A::Value> {
         let column = self.get_column(pos.x)?;
         A::column_data_ref(column).get(pos.y)
-    }
-
-    pub fn cell_numeric_info(&self, pos: Pos) -> (Option<NumericFormat>, Option<i16>) {
-        if let Some(column) = self.get_column(pos.x) {
-            let format = column.numeric_format.get(pos.y);
-            let decimals = column.numeric_decimals.get(pos.y);
-            (format, decimals)
-        } else {
-            (None, None)
-        }
     }
 
     pub fn cell_numeric_format_kind(&self, pos: Pos) -> Option<NumericFormatKind> {
@@ -212,71 +245,31 @@ impl Sheet {
     }
 
     /// Returns a summary of formatting in a region.
-    pub fn get_formatting_summary(&self, region: Rect) -> FormattingSummary {
-        let mut bold = BoolSummary::default();
-        let mut italic = BoolSummary::default();
-
-        for x in region.x_range() {
-            match self.columns.get(&x) {
-                None => {
-                    bold.is_any_false = true;
-                    italic.is_any_false = true;
-                }
-                Some(column) => {
-                    bold |= column.bold.bool_summary(region.y_range());
-                    italic |= column.italic.bool_summary(region.y_range());
-                }
-            };
-        }
-
-        FormattingSummary { bold, italic }
-    }
-
-    /// Returns a summary of formatting in a region.
-    pub fn get_cell_format_summary(&self, pos: Pos) -> CellFormatSummary {
-        match self.columns.get(&pos.x) {
-            None => CellFormatSummary {
-                bold: None,
-                italic: None,
-                text_color: None,
-                fill_color: None,
-            },
-            Some(column) => CellFormatSummary {
-                bold: column.bold.get(pos.y),
-                italic: column.italic.get(pos.y),
-                text_color: column.text_color.get(pos.y),
-                fill_color: column.fill_color.get(pos.y),
-            },
-        }
-    }
-
-    // returns CellFormatSummary only if a formatting exists
-    // TODL(ddimaria): this function is nearly a duplicate of get_cell_format_summary, talk
-    // with the team to see if we can consolidate
-    pub fn get_existing_cell_format_summary(&self, pos: Pos) -> Option<CellFormatSummary> {
-        match self.columns.get(&pos.x) {
-            Some(column) => {
-                let bold = column.bold.get(pos.y);
-                let italic = column.italic.get(pos.y);
-                let fill_color = column.fill_color.get(pos.y);
-                let text_color = column.text_color.get(pos.y);
-
-                if bold.is_some()
-                    || italic.is_some()
-                    || fill_color.is_some()
-                    || text_color.is_some()
-                {
-                    Some(CellFormatSummary {
-                        bold,
-                        italic,
-                        fill_color,
-                        text_color,
-                    })
-                } else {
-                    None
-                }
-            }
-            None => None,
+    pub fn cell_format_summary(&self, pos: Pos, include_sheet_info: bool) -> CellFormatSummary {
+        let cell = self.columns.get(&pos.x).map(|column| Format {
+            bold: column.bold.get(pos.y),
+            italic: column.italic.get(pos.y),
+            text_color: column.text_color.get(pos.y),
+            fill_color: column.fill_color.get(pos.y),
+            numeric_commas: column.numeric_commas.get(pos.y),
+            ..Default::default()
+        });
+        let format = if include_sheet_info {
+            Format::combine(
+                cell.as_ref(),
+                self.try_format_column(pos.x).as_ref(),
+                self.try_format_row(pos.y).as_ref(),
+                self.format_all.as_ref(),
+            )
+        } else {
+            cell.unwrap_or_default()
+        };
+        CellFormatSummary {
+            bold: format.bold,
+            italic: format.italic,
+            text_color: format.text_color,
+            fill_color: format.fill_color,
+            commas: format.numeric_commas,
         }
     }
 
@@ -286,7 +279,7 @@ impl Sheet {
         pos: Pos,
         value: Option<A::Value>,
     ) -> Option<A::Value> {
-        let (_, column) = self.get_or_create_column(pos.x);
+        let column = self.get_or_create_column(pos.x);
         A::column_data_mut(column).set(pos.y, value)
     }
 
@@ -300,147 +293,29 @@ impl Sheet {
         &mut self.borders
     }
 
-    /// Returns an iterator over each column and its X coordinate.
-    pub fn iter_columns(&self) -> impl '_ + Iterator<Item = (i64, &Column)> {
-        self.columns.iter().map(|(&x, column)| (x, column))
-    }
-    /// Returns an iterator over each row ID and its Y coordinate.
-    pub fn iter_rows(&self) -> impl '_ + Iterator<Item = (i64, RowId)> {
-        self.row_ids.iter()
-    }
     /// Returns a column of a sheet from the column index.
     pub(crate) fn get_column(&self, index: i64) -> Option<&Column> {
         self.columns.get(&index)
     }
     /// Returns a column of a sheet from its index, or creates a new column at
     /// that index.
-    pub(crate) fn get_or_create_column(
-        &mut self,
-        index: i64,
-    ) -> (GetIdResponse<ColumnId>, &mut Column) {
-        match self.columns.entry(index) {
+    pub(crate) fn get_or_create_column(&mut self, x: i64) -> &mut Column {
+        match self.columns.entry(x) {
             btree_map::Entry::Vacant(e) => {
-                let column = e.insert(Column::new());
-                self.column_ids.add(column.id, index);
-                (GetIdResponse::new(column.id), column)
+                let column = e.insert(Column::new(x));
+                column
             }
             btree_map::Entry::Occupied(e) => {
                 let column = e.into_mut();
-                (GetIdResponse::old(column.id), column)
+                column
             }
-        }
-    }
-    /// Returns the ID of a row of a sheet from the row index.
-    pub(crate) fn get_row(&self, index: i64) -> Option<RowId> {
-        self.row_ids.id_at(index)
-    }
-    /// Returns a row of a sheet from its index, or creates a new row at that
-    /// index.
-    pub(crate) fn get_or_create_row(&mut self, index: i64) -> GetIdResponse<RowId> {
-        match self.row_ids.id_at(index) {
-            Some(id) => GetIdResponse::old(id),
-            None => {
-                let id = RowId::new();
-                self.row_ids.add(id, index);
-                GetIdResponse::new(id)
-            }
-        }
-    }
-
-    /// Returns the position references by a `CellRef`.
-    pub(crate) fn cell_ref_to_pos(&self, cell_ref: CellRef) -> Option<Pos> {
-        Some(Pos {
-            x: self.column_ids.index_of(cell_ref.column)?,
-            y: self.row_ids.index_of(cell_ref.row)?,
-        })
-    }
-    /// Creates a `CellRef` if the column and row already exist.
-    pub(crate) fn try_get_cell_ref(&self, pos: Pos) -> Option<CellRef> {
-        Some(CellRef {
-            sheet: self.id,
-            column: self.column_ids.id_at(pos.x)?,
-            row: self.row_ids.id_at(pos.y)?,
-        })
-    }
-    /// Creates a `CellRef`, creating the column and row if they do not already
-    /// exist.
-    pub(crate) fn get_or_create_cell_ref(&mut self, pos: Pos) -> CellRef {
-        CellRef {
-            sheet: self.id,
-            column: self.get_or_create_column(pos.x).0.id,
-            row: self.get_or_create_row(pos.y).id,
-        }
-    }
-
-    /// Returns the X coordinate of a column from its ID, or `None` if no such
-    /// column exists.
-    pub(crate) fn get_column_index(&self, column_id: ColumnId) -> Option<i64> {
-        self.column_ids.index_of(column_id)
-    }
-    /// Returns the Y coordinate of a row from its ID, or `None` if no such row
-    /// exists.
-    pub(crate) fn get_row_index(&self, row_id: RowId) -> Option<i64> {
-        self.row_ids.index_of(row_id)
-    }
-
-    /// Returns contiguous ranges of X coordinates from a list of column IDs.
-    /// Ignores IDs for columns that don't exist.
-    pub(crate) fn column_ranges(&self, column_ids: &[ColumnId]) -> Vec<Range<i64>> {
-        let xs = column_ids
-            .iter()
-            .filter_map(|&id| self.get_column_index(id));
-        contiguous_ranges(xs)
-    }
-    /// Returns contiguous ranges of Y coordinates from a list of row IDs.
-    /// Ignores IDs for rows that don't exist.
-    pub(crate) fn row_ranges(&self, row_ids: &[RowId]) -> Vec<Range<i64>> {
-        row_ranges(row_ids, &self.row_ids)
-    }
-    /// Returns a list of rectangles that exactly covers a region. Ignores
-    /// IDs for columns and rows that don't exist.
-    pub(crate) fn region_rects(&self, region: &RegionRef) -> impl Iterator<Item = Rect> {
-        let x_ranges = self.column_ranges(&region.columns);
-        let y_ranges = self.row_ranges(&region.rows);
-        itertools::iproduct!(x_ranges, y_ranges).map(|(xs, ys)| Rect::from_ranges(xs, ys))
-    }
-    /// Returns a region of the sheet, assigning IDs to columns and rows as needed.
-    pub fn region(&mut self, rect: Rect) -> RegionRef {
-        let columns = rect
-            .x_range()
-            .map(|x| self.get_or_create_column(x).0.id)
-            .collect();
-        let rows = rect
-            .y_range()
-            .map(|y| self.get_or_create_row(y).id)
-            .collect();
-        RegionRef {
-            sheet: self.id,
-            columns,
-            rows,
-        }
-    }
-    /// Returns a region of the sheet, ignoring columns and rows which
-    /// have no contents and no IDs.
-    pub fn existing_region(&self, rect: Rect) -> RegionRef {
-        let columns = rect
-            .x_range()
-            .filter_map(|x| self.get_column(x))
-            .map(|col| col.id)
-            .collect();
-        let rows = rect.y_range().filter_map(|y| self.get_row(y)).collect();
-        RegionRef {
-            sheet: self.id,
-            columns,
-            rows,
         }
     }
 
     /// Deletes all data and formatting in the sheet, effectively recreating it.
     pub fn clear(&mut self) {
-        self.column_ids = IdMap::new();
-        self.row_ids = IdMap::new();
         self.columns.clear();
-        self.code_cells.clear();
+        self.code_runs.clear();
         self.recalculate_bounds();
     }
 
@@ -449,25 +324,29 @@ impl Sheet {
     }
 
     /// get or calculate decimal places for a cell
-    pub fn decimal_places(&self, pos: Pos, is_percentage: bool) -> Option<i16> {
+    pub fn calculate_decimal_places(&self, pos: Pos, is_percentage: bool) -> Option<i16> {
         // first check if numeric_decimals already exists for this cell
-        if let Some(decimals) = self.get_column(pos.x)?.numeric_decimals.get(pos.y) {
+        if let Some(decimals) = self.format_cell(pos.x, pos.y, true).numeric_decimals {
             return Some(decimals);
         }
 
         // otherwise check value to see if it has a decimal and use that length
-        if let Some(value) = self.get_cell_value(pos) {
+        if let Some(value) = self.display_value(pos) {
             match value {
                 CellValue::Number(n) => {
-                    let (_, exponent) = n.as_bigint_and_exponent();
+                    let exponent = n.as_bigint_and_exponent().1;
                     let max_decimals = 9;
-                    let decimals = exponent.min(max_decimals) as i16;
+                    let mut decimals = n
+                        .with_scale_round(exponent.min(max_decimals), RoundingMode::HalfUp)
+                        .normalized()
+                        .as_bigint_and_exponent()
+                        .1 as i16;
 
                     if is_percentage {
-                        Some(decimals - 2)
-                    } else {
-                        Some(decimals)
+                        decimals -= 2;
                     }
+
+                    Some(decimals)
                 }
                 _ => None,
             }
@@ -475,87 +354,33 @@ impl Sheet {
             None
         }
     }
-
-    /// Determines whether an output array would cause a spill error because it
-    /// would overlap existing cell values or spills.
-    pub fn is_ok_to_spill_in(&self, cell_ref: CellRef, size: ArraySize) -> Option<bool> {
-        let Pos { x, y } = self.cell_ref_to_pos(cell_ref)?;
-        let (w, h) = size.into();
-
-        // check if the output array would cause a spill
-        //
-        // TODO(ddimaria): resolve comments from @HactarCE:
-        //
-        // If we factor the per-row loop into a method on Column we can make
-        // this method O(n) by taking advantage of the column data structures.
-        //
-        // If this method takes a Rect, then this is just a simple loop over
-        // the Positions in the Rect which is nice.
-        for i in 0..w {
-            for j in 0..h {
-                let x = x + i;
-                let y = y + j;
-
-                if let Some(column) = self.columns.get(&x) {
-                    if let Some(spill) = column.spills.get(y) {
-                        if spill != cell_ref {
-                            return Some(true);
-                        }
-                    }
-                    if let Some(value) = column.values.get(y) {
-                        if !value.is_blank() {
-                            return Some(true);
-                        }
-                    }
-                }
-            }
-        }
-
-        Some(false)
-    }
-}
-
-fn contiguous_ranges(values: impl IntoIterator<Item = i64>) -> Vec<Range<i64>> {
-    // Usually `values` is already sorted or nearly sorted, in which case this
-    // is `O(n)`. At worst, it's `O(n log n)`.
-    let mut ret: Vec<Range<i64>> = vec![];
-    for i in values.into_iter().sorted() {
-        match ret.last_mut() {
-            Some(range) if range.end == i => range.end += 1,
-            Some(range) if (*range).contains(&i) => continue,
-            _ => ret.push(i..i + 1),
-        }
-    }
-    ret
-}
-
-pub fn row_ranges(row_ids: &[RowId], id_map: &IdMap<RowId, i64>) -> Vec<Range<i64>> {
-    let ys = row_ids.iter().filter_map(|&id| id_map.index_of(id));
-    contiguous_ranges(ys)
 }
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
-    use bigdecimal::BigDecimal;
-
     use super::*;
     use crate::{
-        controller::{auto_complete::cell_values_in_rect, GridController},
-        grid::{Bold, Italic, NumericFormat},
+        controller::GridController,
+        grid::{
+            formats::{format_update::FormatUpdate, Formats},
+            Bold, CodeCellLanguage, Italic, NumericFormat,
+        },
+        selection::Selection,
         test_util::print_table,
+        CodeCellValue, SheetPos,
     };
+    use bigdecimal::BigDecimal;
+    use std::str::FromStr;
 
     fn test_setup(selection: &Rect, vals: &[&str]) -> (GridController, SheetId) {
-        let mut grid_controller = GridController::new();
+        let mut grid_controller = GridController::test();
         let sheet_id = grid_controller.grid().sheets()[0].id;
         let mut count = 0;
 
         for y in selection.y_range() {
             for x in selection.x_range() {
-                let pos = Pos { x, y };
-                grid_controller.set_cell_value(sheet_id, pos, vals[count].to_string(), None);
+                let sheet_pos = SheetPos { x, y, sheet_id };
+                grid_controller.set_cell_value(sheet_pos, vals[count].to_string(), None);
                 count += 1;
             }
         }
@@ -564,11 +389,9 @@ mod test {
     }
 
     fn test_setup_basic() -> (GridController, SheetId, Rect) {
-        let selected: Rect = Rect::new_span(Pos { x: 2, y: 1 }, Pos { x: 5, y: 2 });
         let vals = vec!["1", "2", "3", "4", "5", "6", "7", "8"];
+        let selected = Rect::new_span(Pos { x: 2, y: 1 }, Pos { x: 5, y: 2 });
         let (grid_controller, sheet_id) = test_setup(&selected, &vals);
-
-        print_table(&grid_controller, sheet_id, selected);
 
         (grid_controller, sheet_id, selected)
     }
@@ -583,8 +406,8 @@ mod test {
         expected: Option<i16>,
     ) {
         let pos = Pos { x, y };
-        sheet.set_cell_value(pos, CellValue::Number(BigDecimal::from_str(value).unwrap()));
-        assert_eq!(sheet.decimal_places(pos, is_percentage), expected);
+        let _ = sheet.set_cell_value(pos, CellValue::Number(BigDecimal::from_str(value).unwrap()));
+        assert_eq!(sheet.calculate_decimal_places(pos, is_percentage), expected);
     }
 
     #[test]
@@ -605,32 +428,76 @@ mod test {
     }
 
     #[test]
-    fn test_current_decimal_places_numeric_format() {
-        let mut sheet = Sheet::new(SheetId::new(), String::from(""), String::from(""));
+    fn decimal_places() {
+        let mut gc = GridController::test();
+        let sheet_id = gc.sheet_ids()[0];
 
-        let column = sheet.get_or_create_column(3);
-        column.1.numeric_decimals.set(3, Some(3));
+        let sheet = gc.sheet_mut(sheet_id);
+        sheet.set_formats_columns(
+            &[3],
+            &Formats::repeat(
+                FormatUpdate {
+                    numeric_decimals: Some(Some(2)),
+                    ..Default::default()
+                },
+                1,
+            ),
+        );
+        assert_eq!(
+            sheet.calculate_decimal_places(Pos { x: 3, y: 3 }, false),
+            Some(2)
+        );
 
-        assert_eq!(sheet.decimal_places(Pos { x: 3, y: 3 }, false), Some(3));
+        sheet.set_format_cell(
+            Pos { x: 3, y: 3 },
+            &FormatUpdate {
+                numeric_decimals: Some(Some(3)),
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(
+            sheet.calculate_decimal_places(Pos { x: 3, y: 3 }, false),
+            Some(3)
+        );
     }
 
     #[test]
     fn test_current_decimal_places_text() {
         let mut sheet = Sheet::new(SheetId::new(), String::from(""), String::from(""));
 
-        sheet.set_cell_value(
+        let _ = sheet.set_cell_value(
             crate::Pos { x: 1, y: 2 },
             CellValue::Text(String::from("abc")),
         );
 
-        assert_eq!(sheet.decimal_places(Pos { x: 1, y: 2 }, false), None);
+        assert_eq!(
+            sheet.calculate_decimal_places(Pos { x: 1, y: 2 }, false),
+            None
+        );
+    }
+
+    #[test]
+    fn test_current_decimal_places_float() {
+        let mut sheet = Sheet::new(SheetId::new(), String::from(""), String::from(""));
+
+        sheet.set_cell_value(
+            crate::Pos { x: 1, y: 2 },
+            CellValue::Number(BigDecimal::from_str("11.100000000000000000").unwrap()),
+        );
+
+        // expect a single decimal place
+        assert_eq!(
+            sheet.calculate_decimal_places(Pos { x: 1, y: 2 }, false),
+            Some(1)
+        );
     }
 
     #[test]
     fn test_cell_numeric_format_kind() {
         let mut sheet = Sheet::new(SheetId::new(), String::from(""), String::from(""));
         let column = sheet.get_or_create_column(0);
-        column.1.numeric_format.set(
+        column.numeric_format.set(
             0,
             Some(NumericFormat {
                 kind: NumericFormatKind::Percentage,
@@ -648,7 +515,7 @@ mod test {
     fn test_set_cell_values() {
         let selected: Rect = Rect::new_span(Pos { x: 2, y: 1 }, Pos { x: 4, y: 1 });
         let vals = vec!["a", "1", "$1.11"];
-        let expected = vec![
+        let expected = [
             CellValue::Text("a".into()),
             CellValue::Number(BigDecimal::from_str("1").unwrap()),
             CellValue::Number(BigDecimal::from_str("1.11").unwrap()),
@@ -657,8 +524,8 @@ mod test {
 
         print_table(&grid, sheet_id, selected);
 
-        let sheet = grid.grid().sheet_from_id(sheet_id);
-        let values = cell_values_in_rect(&selected, sheet).unwrap();
+        let sheet = grid.sheet(sheet_id);
+        let values = sheet.cell_values_in_rect(&selected, false).unwrap();
         values
             .into_cell_values_vec()
             .into_iter()
@@ -667,49 +534,39 @@ mod test {
     }
 
     #[test]
-    fn test_delete_cell_values() {
-        let (mut grid, sheet_id, selected) = test_setup_basic();
+    fn delete_cell_values() {
+        let mut gc = GridController::test();
+        let sheet_id = gc.sheet_ids()[0];
+        let sheet = gc.sheet_mut(sheet_id);
+        sheet.test_set_values(0, 0, 2, 2, vec!["1", "2", "a", "b"]);
 
-        grid.delete_cells_rect(sheet_id, selected, None);
-        let sheet = grid.grid().sheet_from_id(sheet_id);
+        let rect = Rect::from_numbers(0, 0, 2, 2);
+        let selection = &Selection::rect(rect, sheet_id);
+        gc.delete_cells(selection, None);
 
-        print_table(&grid, sheet_id, selected);
-
-        let values = cell_values_in_rect(&selected, sheet).unwrap();
-        values
-            .into_cell_values_vec()
-            .into_iter()
-            .for_each(|v| assert_eq!(v, CellValue::Blank));
+        let sheet = gc.sheet(sheet_id);
+        assert!(sheet.cell_value(Pos { x: 0, y: 0 }).is_none());
+        assert!(sheet.cell_value(Pos { x: 0, y: 1 }).is_none());
+        assert!(sheet.cell_value(Pos { x: 1, y: 0 }).is_none());
+        assert!(sheet.cell_value(Pos { x: 1, y: 1 }).is_none());
     }
 
-    // TODO(ddimaria): use the code below as a template once formula cells are in place
-    #[ignore]
     #[test]
-    fn test_delete_cell_values_affects_dependent_cells() {
-        let (mut grid, sheet_id, selected) = test_setup_basic();
+    fn delete_cell_values_code() {
+        let mut gc = GridController::test();
+        let sheet_id = gc.sheet_ids()[0];
+        let sheet = gc.sheet_mut(sheet_id);
+        sheet.set_cell_value(
+            Pos { x: 0, y: 0 },
+            CellValue::Code(CodeCellValue {
+                code: "test".to_string(),
+                language: CodeCellLanguage::Formula,
+            }),
+        );
+        gc.delete_cells(&Selection::pos(0, 0, sheet_id), None);
 
-        let view_rect = Rect::new_span(Pos { x: 2, y: 1 }, Pos { x: 5, y: 4 });
-        let _code_cell = crate::grid::CodeCellValue {
-            language: crate::grid::CodeCellLanguage::Formula,
-            code_string: "=SUM(A1:B2)".into(),
-            formatted_code_string: None,
-            last_modified: "".into(),
-            output: None,
-        };
-
-        // grid.set_code_cell_value((5, 2).into(), Some(code_cell));
-        print_table(&grid, sheet_id, view_rect);
-
-        grid.delete_cells_rect(sheet_id, selected, None);
-        let sheet = grid.grid().sheet_from_id(sheet_id);
-
-        print_table(&grid, sheet_id, view_rect);
-
-        let values = cell_values_in_rect(&selected, sheet).unwrap();
-        values
-            .into_cell_values_vec()
-            .into_iter()
-            .for_each(|v| assert_eq!(v, CellValue::Blank));
+        let sheet = gc.sheet(sheet_id);
+        assert!(sheet.cell_value(Pos { x: 0, y: 0 }).is_none());
     }
 
     // TODO(ddimaria): use the code below as a template once cell borders are in place
@@ -738,8 +595,8 @@ mod test {
     #[test]
     fn test_get_cell_value() {
         let (grid, sheet_id, _) = test_setup_basic();
-        let sheet = grid.grid().sheet_from_id(sheet_id);
-        let value = sheet.get_cell_value((2, 1).into());
+        let sheet = grid.sheet(sheet_id);
+        let value = sheet.display_value((2, 1).into());
 
         assert_eq!(value, Some(CellValue::Number(BigDecimal::from(1))));
     }
@@ -747,46 +604,11 @@ mod test {
     #[test]
     fn test_get_set_formatting_value() {
         let (grid, sheet_id, _) = test_setup_basic();
-        let mut sheet = grid.grid().sheet_from_id(sheet_id).clone();
-        sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
+        let mut sheet = grid.sheet(sheet_id).clone();
+        let _ = sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
         let value = sheet.get_formatting_value::<Bold>((2, 1).into());
 
         assert_eq!(value, Some(true));
-    }
-
-    #[test]
-    fn test_get_set_code_cell_value() {
-        let (grid, sheet_id, _) = test_setup_basic();
-        let mut sheet = grid.grid().sheet_from_id(sheet_id).clone();
-        let code_cell = crate::grid::CodeCellValue {
-            language: crate::grid::CodeCellLanguage::Formula,
-            code_string: "=SUM(A1:B2)".into(),
-            formatted_code_string: None,
-            last_modified: "".into(),
-            output: None,
-        };
-        sheet.set_code_cell_value((2, 1).into(), Some(code_cell.clone()));
-        let value = sheet.get_code_cell((2, 1).into());
-
-        assert_eq!(value, Some(&code_cell));
-
-        let cell_ref = CellRef {
-            sheet: sheet_id,
-            column: grid
-                .grid()
-                .sheet_from_id(sheet_id)
-                .column_ids
-                .id_at(2)
-                .unwrap(),
-            row: grid
-                .grid()
-                .sheet_from_id(sheet_id)
-                .row_ids
-                .id_at(1)
-                .unwrap(),
-        };
-        let value = sheet.get_code_cell_from_ref(cell_ref);
-        assert_eq!(value, Some(&code_cell));
     }
 
     // TODO(ddimaria): use the code below numeric format kinds are in place
@@ -794,7 +616,7 @@ mod test {
     #[test]
     fn test_cell_numeric_format_kinds() {
         let (grid, sheet_id, _) = test_setup_basic();
-        let sheet = grid.grid().sheet_from_id(sheet_id).clone();
+        let sheet = grid.sheet(sheet_id).clone();
 
         let format_kind = sheet.cell_numeric_format_kind((2, 1).into());
         assert_eq!(format_kind, Some(NumericFormatKind::Currency));
@@ -810,121 +632,73 @@ mod test {
     }
 
     #[test]
-    fn test_formatting_summary() {
-        let (grid, sheet_id, selected) = test_setup_basic();
-        let mut sheet = grid.grid().sheet_from_id(sheet_id).clone();
-        sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
-
-        // just set a single bold value
-        let value = sheet.get_formatting_summary(selected);
-        let mut format_summary = FormattingSummary {
-            bold: BoolSummary {
-                is_any_true: true,
-                is_any_false: false,
-            },
-            italic: BoolSummary {
-                is_any_true: false,
-                is_any_false: false,
-            },
-        };
-        assert_eq!(value, format_summary);
-
-        // now add in a single italic value
-        sheet.set_formatting_value::<Italic>((3, 1).into(), Some(true));
-        let value = sheet.get_formatting_summary(selected);
-        format_summary.italic.is_any_true = true;
-        assert_eq!(value, format_summary);
-    }
-
-    #[test]
     fn test_cell_format_summary() {
         let (grid, sheet_id, _) = test_setup_basic();
-        let mut sheet = grid.grid().sheet_from_id(sheet_id).clone();
+        let mut sheet = grid.sheet(sheet_id).clone();
 
-        let existing_cell_format_summary = sheet.get_existing_cell_format_summary((2, 1).into());
-        assert_eq!(None, existing_cell_format_summary);
+        let format_summary = sheet.cell_format_summary((2, 1).into(), false);
+        assert_eq!(format_summary, CellFormatSummary::default());
 
         // just set a bold value
-        sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
-        let value = sheet.get_cell_format_summary((2, 1).into());
+        let _ = sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
+        let value = sheet.cell_format_summary((2, 1).into(), false);
         let mut cell_format_summary = CellFormatSummary {
             bold: Some(true),
             italic: None,
             text_color: None,
             fill_color: None,
+            commas: None,
         };
         assert_eq!(value, cell_format_summary);
 
-        let existing_cell_format_summary = sheet.get_existing_cell_format_summary((2, 1).into());
-        assert_eq!(
-            Some(cell_format_summary.clone()),
-            existing_cell_format_summary
-        );
+        let format_summary = sheet.cell_format_summary((2, 1).into(), false);
+        assert_eq!(cell_format_summary.clone(), format_summary);
 
         // now set a italic value
-        sheet.set_formatting_value::<Italic>((2, 1).into(), Some(true));
-        let value = sheet.get_cell_format_summary((2, 1).into());
+        let _ = sheet.set_formatting_value::<Italic>((2, 1).into(), Some(true));
+        let value = sheet.cell_format_summary((2, 1).into(), false);
         cell_format_summary.italic = Some(true);
         assert_eq!(value, cell_format_summary);
 
-        let existing_cell_format_summary = sheet.get_existing_cell_format_summary((2, 1).into());
-        assert_eq!(
-            Some(cell_format_summary.clone()),
-            existing_cell_format_summary
-        );
+        let existing_cell_format_summary = sheet.cell_format_summary((2, 1).into(), false);
+        assert_eq!(cell_format_summary.clone(), existing_cell_format_summary);
     }
 
     #[test]
     fn test_columns() {
         let (grid, sheet_id, _) = test_setup_basic();
-        let mut sheet = grid.grid().sheet_from_id(sheet_id).clone();
+        let mut sheet = grid.sheet(sheet_id).clone();
 
-        // get all columns
-        let columns = sheet.iter_columns().collect::<Vec<_>>();
-        assert_eq!(None, columns[0].1.bold.get(1));
+        let column = sheet.get_column(2);
+        assert_eq!(None, column.unwrap().bold.get(1));
 
         // set a bold value, validate it's in the vec
-        sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
+        let _ = sheet.set_formatting_value::<Bold>((2, 1).into(), Some(true));
         let columns = sheet.iter_columns().collect::<Vec<_>>();
         assert_eq!(Some(true), columns[0].1.bold.get(1));
 
         // assert that get_column matches the column in the vec
         let index = columns[0].0;
-        let column = sheet.get_column(index);
+        let column = sheet.get_column(*index);
         assert_eq!(Some(true), column.unwrap().bold.get(1));
 
         // existing column
         let mut sheet = sheet.clone();
         let existing_column = sheet.get_or_create_column(2);
-        assert_eq!(column, Some(existing_column.1).as_deref());
+        assert_eq!(column, Some(existing_column).as_deref());
 
         // new column
         let mut sheet = sheet.clone();
         let new_column = sheet.get_or_create_column(1);
-        assert_eq!(new_column.1, &Column::with_id(new_column.0.id));
+        assert_eq!(new_column, &Column::new(new_column.x));
     }
 
     #[test]
-    fn test_rows() {
-        let (grid, sheet_id, _) = test_setup_basic();
-        let sheet = grid.grid().sheet_from_id(sheet_id).clone();
-
-        // get all rows
-        let rows = sheet.iter_rows().collect::<Vec<_>>();
-        let row = sheet.get_row(1);
-        assert_eq!(row, Some(rows[0].1));
-
-        let row = sheet.get_row(2);
-        assert_eq!(row, Some(rows[1].1));
-
-        // existing row
-        let mut sheet = sheet.clone();
-        let existing_row = sheet.get_or_create_row(1);
-        assert_eq!(Some(rows[0].1), Some(existing_row.id));
-
-        // new row
-        let mut sheet = sheet.clone();
-        let new_row = sheet.get_or_create_row(3);
-        rows.iter().for_each(|row| assert_ne!(row.1, new_row.id));
+    fn display_value_blanks() {
+        let mut sheet = Sheet::test();
+        let pos = Pos { x: 0, y: 0 };
+        assert_eq!(sheet.display_value(pos), None);
+        sheet.set_cell_value(pos, CellValue::Blank);
+        assert_eq!(sheet.display_value(pos), None);
     }
 }

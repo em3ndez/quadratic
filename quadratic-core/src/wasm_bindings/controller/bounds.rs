@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Serialize, Deserialize, Debug)]
-#[wasm_bindgen]
+#[cfg_attr(feature = "js", derive(ts_rs::TS))]
 pub struct MinMax {
     pub min: i32,
     pub max: i32,
@@ -16,29 +16,12 @@ impl GridController {
         sheet_id: String,
         ignore_formatting: bool,
     ) -> Result<JsValue, JsValue> {
-        let sheet_id = SheetId::from_str(&sheet_id).unwrap();
-
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return Err(JsValue::from_str("Sheet not found"));
+        };
         Ok(serde_wasm_bindgen::to_value(
-            &self.sheet(sheet_id).bounds(ignore_formatting),
+            &sheet.bounds(ignore_formatting),
         )?)
-    }
-
-    // returns a column's bounds.
-    #[wasm_bindgen(js_name = "getColumnBounds")]
-    pub fn get_column_bounds(
-        &self,
-        sheet_id: String,
-        column: i32,
-        ignore_formatting: bool,
-    ) -> Option<MinMax> {
-        let sheet = self.grid().sheet_from_string(sheet_id);
-        sheet
-            .column_bounds(column as i64, ignore_formatting)
-            .as_ref()
-            .map(|bounds| MinMax {
-                min: bounds.0 as i32,
-                max: bounds.1 as i32,
-            })
     }
 
     // returns a column's bounds.
@@ -49,33 +32,19 @@ impl GridController {
         column_start: i32,
         column_end: i32,
         ignore_formatting: bool,
-    ) -> Option<MinMax> {
-        let sheet = self.grid().sheet_from_string(sheet_id);
-        sheet
-            .columns_bounds(column_start as i64, column_end as i64, ignore_formatting)
-            .as_ref()
-            .map(|bounds| MinMax {
+    ) -> Option<String> {
+        let sheet = self.try_sheet_from_string_id(sheet_id)?;
+        if let Some(bounds) =
+            sheet.columns_bounds(column_start as i64, column_end as i64, ignore_formatting)
+        {
+            let min_max = MinMax {
                 min: bounds.0 as i32,
                 max: bounds.1 as i32,
-            })
-    }
-
-    // returns a row's bounds.
-    #[wasm_bindgen(js_name = "getRowBounds")]
-    pub fn get_row_bounds(
-        &self,
-        sheet_id: String,
-        row: i32,
-        ignore_formatting: bool,
-    ) -> Option<MinMax> {
-        let sheet = self.grid().sheet_from_string(sheet_id);
-        sheet
-            .row_bounds(row as i64, ignore_formatting)
-            .as_ref()
-            .map(|bounds| MinMax {
-                min: bounds.0 as i32,
-                max: bounds.1 as i32,
-            })
+            };
+            serde_json::to_string(&min_max).ok()
+        } else {
+            None
+        }
     }
 
     // returns a column's bounds.
@@ -86,15 +55,18 @@ impl GridController {
         row_start: i32,
         row_end: i32,
         ignore_formatting: bool,
-    ) -> Option<MinMax> {
-        let sheet = self.grid().sheet_from_string(sheet_id);
-        sheet
-            .rows_bounds(row_start as i64, row_end as i64, ignore_formatting)
-            .as_ref()
-            .map(|bounds| MinMax {
+    ) -> Option<String> {
+        let sheet = self.try_sheet_from_string_id(sheet_id)?;
+        if let Some(bounds) = sheet.rows_bounds(row_start as i64, row_end as i64, ignore_formatting)
+        {
+            let min_max = MinMax {
                 min: bounds.0 as i32,
                 max: bounds.1 as i32,
-            })
+            };
+            serde_json::to_string(&min_max).ok()
+        } else {
+            None
+        }
     }
 
     /// finds nearest column with or without content
@@ -107,7 +79,10 @@ impl GridController {
         reverse: bool,
         with_content: bool,
     ) -> i32 {
-        let sheet = self.grid().sheet_from_string(sheet_id);
+        // todo: this should have Result return type and handle no sheet found (which should not happen)
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return 0;
+        };
         sheet.find_next_column(column_start as i64, row as i64, reverse, with_content) as i32
     }
 
@@ -121,7 +96,10 @@ impl GridController {
         reverse: bool,
         with_content: bool,
     ) -> i32 {
-        let sheet = self.grid().sheet_from_string(sheet_id);
+        // todo: this should have Result return type and handle no sheet found (which should not happen)
+        let Some(sheet) = self.try_sheet_from_string_id(sheet_id) else {
+            return 0;
+        };
         sheet.find_next_row(row_start as i64, column as i64, reverse, with_content) as i32
     }
 }
